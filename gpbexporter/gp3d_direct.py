@@ -3,6 +3,11 @@ Created on 10/05/2013
 
 @author: forestmedina
 @contributor: cesarpachon
+
+notes:
+- it only exports those objects visible in the current scene.
+  you can avoid the export of unwanted objects moving to a invisible layer
+- it exports empties as empty nodes    
 '''
 
 import bpy;
@@ -165,6 +170,9 @@ class Node(Reference):
         loc.z = -val
         matrix_world*= mathutils.Matrix.Translation(loc)       
         rot = bobject.rotation_euler
+        if bobject.type == "CAMERA":
+            #a camera with zero rotation looks downards (z- in blender)
+            matrix_world *= mathutils.Matrix.Rotation(math.radians(-90), 4, "X")
         matrix_world *= mathutils.Matrix.Rotation(-rot.y, 4, "Z")
         matrix_world *= mathutils.Matrix.Rotation(rot.z, 4, "Y")
         matrix_world *= mathutils.Matrix.Rotation(rot.x, 4, "X")
@@ -239,12 +247,14 @@ class Mesh(Reference):
     useVertexWeights=False
     uvLayers=None
     useUVLayers=False
+    export_tangent = False
     numVertexUsages = 2
     vertexFormatFloatLen=3+3
     def __init__(self):
         self.tipo=ReferenceType.MESH;
         return;
     
+   
     #
     # writes a single vertex info to the stream.
     # notice that each vertex may be written many times,
@@ -286,6 +296,23 @@ class Mesh(Reference):
                 uvloop = uvlayer.data[face.loop_indices[vertexfaceid]]
                 f.write(struct.pack("<f",uvloop.uv[0]));
                 f.write(struct.pack("<f",uvloop.uv[1]));
+        #now export binormal and tangent (BTN matrix)
+        if self.export_tangent:
+            #compute vector from vertex to center
+            c=mathutils.Vector((face.center[0], face.center[2], -face.center[1]))
+            v0 = mathutils.Vector((v.co[0], v.co[2], -v.co[1]))
+            n0 = mathutils.Vector((v.normal[0], v.normal[2], -v.normal[1]))
+            tangent = c - v0
+            tangent.normalize()
+            #we have diff and the normal.. use cross product to produce tangent, and cross again for binormal
+            binormal = n0.cross(tangent)
+            #write the data
+            f.write(struct.pack("<f",binormal[0]));
+            f.write(struct.pack("<f",binormal[1]));
+            f.write(struct.pack("<f",binormal[2]));
+            f.write(struct.pack("<f",tangent[0]));
+            f.write(struct.pack("<f",tangent[1]));
+            f.write(struct.pack("<f",tangent[2]));
         return;
 
     def writeData(self,f):
@@ -299,6 +326,11 @@ class Mesh(Reference):
             #num of usages depends of number of uvlayers..
             self.numVertexUsages += len(self.uvLayers)
             self.vertexFormatFloatLen += 2*len(self.uvLayers) #two floats for each uvlayer
+        else:
+            self.export_tangent = False #only export tangent if has uv
+        if self.export_tangent:
+            self.numVertexUsages +=2
+            self.vertexFormatFloatLen += 3+3 #three floats for TANGENT, three floats from BINORMAL
         f.write(struct.pack("<I",self.numVertexUsages));#Cantidad de vertexUsage
         #print("usage POSITION*3")
         f.write(struct.pack("<I",1));#VextexUsage 1-POSITION
@@ -706,6 +738,7 @@ print("ejecutando exportador:");
 print(bpy.data.objects);
 _exporter = Exporter();
 _exporter.filepath = "/home/cesar/gameplay/gpbexporter/res/cone.gpb";
+_exporter.export_tangent = True
 _exporter.execute(None);
 print("archivo ejecutado con exito!");
 
