@@ -91,6 +91,7 @@ class Node(Reference):
         if not self.camera is None:
             self.camera.writeReference(f);
         if not self.model is None:
+            #TODO: only write ref once.. 
             self.model.writeReference(f);
         
         
@@ -139,6 +140,7 @@ class Node(Reference):
         else:
             f.write(struct.pack("B",0));#luz longitud de cadena 0
         if not self.model is None:
+            #TODO: write once?
             self.model.writeData(f);
         else:
             f.write(struct.pack("<I",1));#mesh
@@ -192,9 +194,6 @@ class Node(Reference):
         self.transforms[10]=matrix_world[2][2];
         self.transforms[11]=matrix_world[3][2];
         self.transforms[12]=matrix_world[0][3];
-        #if you want to manually change coords, it is like this:
-        #self.transforms[14]=-matrix_world[1][3];
-        #self.transforms[13]=matrix_world[2][3];
         self.transforms[13]=matrix_world[1][3];
         self.transforms[14]=matrix_world[2][3];
         self.transforms[15]=matrix_world[3][3];
@@ -222,6 +221,7 @@ class Model (Reference):
         return;
     
     def writeExtra(self,f):  
+        #TODO: if mesh is already written, ignore it.. 
         self.mesh.writeData(f);
         return;
     
@@ -229,6 +229,7 @@ class Model (Reference):
         f.write(struct.pack("<I",len(self.mesh.reference)+1));#mesh
         f.write(bytearray('#',"ascii"));
         if len(self.mesh.reference)>0:
+            print("model.writeData %s with mesh %s"%(self.reference, self.mesh.reference))
             f.write(bytearray(self.mesh.reference,"ascii"));
         if self.meshSkin is None:
             f.write(struct.pack("B",0));#hasMeshSkin no
@@ -250,6 +251,7 @@ class Mesh(Reference):
     export_tangent = False
     numVertexUsages = 2
     vertexFormatFloatLen=3+3
+    exported = False
     def __init__(self):
         self.tipo=ReferenceType.MESH;
         return;
@@ -264,6 +266,7 @@ class Mesh(Reference):
     def writeVertex(self, vertexfaceid, face, f):
         id = face.vertices[vertexfaceid]
         v = self.vertices[id]
+        #print("writeVertex %d (%f %f %f)"%(id, v.co[0], v.co[1], v.co[2]));
         f.write(struct.pack("<f",v.co[0]));#VextexSize 3 (x,y,z)
         f.write(struct.pack("<f",v.co[2]));#VextexSize 3 (x,y,z)
         f.write(struct.pack("<f",-v.co[1]));#VextexSize 3 (x,y,z)
@@ -316,7 +319,12 @@ class Mesh(Reference):
         return;
 
     def writeData(self,f):
+        if self.exported:
+            print("mesh already exported. skipping. %s" % self.reference)
+            return
+        self.exported = True;
         self.offset=f.tell();
+        print("mesh.writeData %s at %s"%(self.reference, self.offset))
         self.numVertexUsages =2
         self.vertexFormatFloatLen=3+3#three floats from POSITION, three floats from NORMAL
         if self.useVertexWeights:
@@ -352,6 +360,13 @@ class Mesh(Reference):
                 #print("usage TEXTCOORDID%d*2"%textcoordid)
                 f.write(struct.pack("<I", textcoordid));
                 f.write(struct.pack("<I", 2));#two floats for U,V
+        if self.export_tangent:
+            print("usage TANGENT*3")
+            f.write(struct.pack("<I",4));#VextexUsage 4-TANGENT
+            f.write(struct.pack("<I",3));#VextexSize 3 (x,y,z)
+            print("usage BINORMAL*2")
+            f.write(struct.pack("<I",5));#VextexUsage 5-BINORMAL
+            f.write(struct.pack("<I",3));#VextexSize 3 (x,y,z)
         #size in bytes that will require each vertex element 
         f.write(struct.pack("<I",3*len(self.parts)*(self.vertexFormatFloatLen)*4));
         #iterate over polygons and writes each vertex
@@ -440,7 +455,6 @@ class Light(Reference):
     
     def writeData(self, f):
         self.offset=f.tell();
-        print("lamp writeData %d"%self.offset);
         f.write(struct.pack("B",self.lightType));
         f.write(struct.pack("<f",self.color[0]));
         f.write(struct.pack("<f",self.color[1]));
@@ -507,6 +521,8 @@ class Exporter():
     bl_options      = {'PRESET'};
     filename_ext    = ".gpb";
     objetos=[];
+    meshes = {}; # key: mesh name, value: mesh (local class) instance
+    export_tangent = False; #flag to force BTN export in meshes
     
     def procesarArmature(self,nodeMesh, mesh):
         bobject=mesh.parent;
@@ -586,15 +602,17 @@ class Exporter():
 
 
     def procesarMesh(self, bobject):
-        print("processing mesh %s"%bobject.name);
-        mesh = bobject.to_mesh(bpy.context.scene,True,'PREVIEW');
-        meshes_to_clear.append(mesh);
         node= Node();
         node.setTransform(bobject);
         node.model=Model();
-        node.model.mesh=Mesh();
         node.reference=bobject.name;
-        node.model.mesh.reference=bobject.name+"mesh";
+        if bobject.data.name+"_mesh" in self.meshes.keys():
+            node.model.mesh = self.meshes[bobject.data.name+"_mesh"]
+            return    
+        mesh = bobject.to_mesh(bpy.context.scene,True,'PREVIEW');
+        meshes_to_clear.append(mesh);
+        node.model.mesh=Mesh();
+        node.model.mesh.reference=bobject.data.name+"_mesh";
         node.model.mesh.vertices=mesh.vertices;
         node.model.mesh.parts=mesh.polygons;
         self.objetos.append(node);
@@ -604,6 +622,9 @@ class Exporter():
         if len(mesh.uv_layers)>0:
             node.model.mesh.useUVLayers = True
             node.model.mesh.uvLayers = mesh.uv_layers
+            node.model.mesh.export_tangent = (('gpb_export_tangent' in bobject.data) and bobject.data["gpb_export_tangent"] > 0)
+            print("export_tangent= %s"%node.model.mesh.export_tangent)
+        self.meshes[bobject.data.name+"_mesh"]= node.model.mesh
         return node;
         
         
@@ -685,13 +706,16 @@ class Exporter():
         numemptys = 0
         self.objetos=[];
         for ob in bpy.data.objects:
-            if ob.type == 'MESH':
-                self.procesarMesh(ob);
-            elif ob.type == 'LAMP':
-                self.procesarLamp(ob);
-            elif ob.type == 'EMPTY':
-                self.procesarEmpty(ob);
-                numemptys = numemptys+1
+            if ob.is_visible(bpy.context.scene):
+                if ob.type == 'MESH':
+                    self.procesarMesh(ob);
+                elif ob.type == 'LAMP':
+                    self.procesarLamp(ob);
+                elif ob.type == 'EMPTY':
+                    self.procesarEmpty(ob);
+                    numemptys = numemptys+1
+            else:
+                print("ignoring object %s.. not visible in current scene"%ob.name)
         # Create a file header object with data stored in the body section   
         # Open the file for writing
         camera = self.procesarCamera(bpy.data.cameras[bpy.context.scene.camera.name]);
@@ -737,7 +761,8 @@ class Exporter():
 print("ejecutando exportador:");
 print(bpy.data.objects);
 _exporter = Exporter();
-_exporter.filepath = "/home/cesar/gameplay/gpbexporter/res/cone.gpb";
+_exporter.filepath = "/home/cesar/sena_canotaje/canotaje01/res/test_scene.gpb";
+#this is a global permision. it is ANDed to the custom property "gpb_export_tangent" in each MESH datablock (if exist and if is greater than 0)
 _exporter.export_tangent = True
 _exporter.execute(None);
 print("archivo ejecutado con exito!");
